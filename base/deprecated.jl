@@ -1615,6 +1615,17 @@ function SymTridiagonal(dv::AbstractVector{T}, ev::AbstractVector{S}) where {T,S
     SymTridiagonal(convert(Vector{R}, dv), convert(Vector{R}, ev))
 end
 
+# PR #22932
+@deprecate +(a::Number, b::AbstractArray) broadcast(+, a, b)
+@deprecate +(a::AbstractArray, b::Number) broadcast(+, a, b)
+@deprecate -(a::Number, b::AbstractArray) broadcast(-, a, b)
+@deprecate -(a::AbstractArray, b::Number) broadcast(-, a, b)
+
+@deprecate +(a::GeneralPeriod, b::StridedArray{<:GeneralPeriod}) broadcast(+, a, b)
+@deprecate +(a::StridedArray{<:GeneralPeriod}, b::GeneralPeriod) broadcast(+, a, b)
+@deprecate -(a::GeneralPeriod, b::StridedArray{<:GeneralPeriod}) broadcast(-, a, b)
+@deprecate -(a::StridedArray{<:GeneralPeriod}, b::GeneralPeriod) broadcast(-, a, b)
+
 # END 0.7 deprecations
 
 # BEGIN 1.0 deprecations

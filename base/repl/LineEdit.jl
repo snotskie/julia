@@ -437,7 +437,7 @@ function splice_buffer!(buf::IOBuffer, r::UnitRange{<:Integer}, ins::AbstractStr
     elseif pos > last(r)
         seek(buf, pos - length(r))
     end
-    splice!(buf.data, r + 1, Vector{UInt8}(ins)) # position(), etc, are 0-indexed
+    splice!(buf.data, broadcast(+, r, 1), Vector{UInt8}(ins)) # position(), etc, are 0-indexed
     buf.size = buf.size + sizeof(ins) - length(r)
     seek(buf, position(buf) + sizeof(ins))
 end
