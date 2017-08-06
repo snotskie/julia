@@ -1615,6 +1615,14 @@ function SymTridiagonal(dv::AbstractVector{T}, ev::AbstractVector{S}) where {T,S
     SymTridiagonal(convert(Vector{R}, dv), convert(Vector{R}, ev))
 end
 
+# PR #23154
+# also uncomment constructor tests in test/linalg/tridiag.jl
+function Tridiagonal(dl::AbstractVector{Tl}, d::AbstractVector{Td}, du::AbstractVector{Tu}) where {Tl,Td,Tu}
+    depwarn(string("Tridiagonal(dl::AbstractVector{Tl}, d::AbstractVector{Td}, du::AbstractVector{Tu}) ",
+        "where {Tl, Td, Tu} is deprecated; convert all vectors to the same type instead."), :Tridiagonal)
+    Tridiagonal(map(v->convert(Vector{promote_type(Tl,Td,Tu)}, v), (dl, d, du))...)
+end
+
 # END 0.7 deprecations
 
 # BEGIN 1.0 deprecations
