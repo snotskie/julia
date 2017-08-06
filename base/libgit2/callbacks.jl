@@ -48,8 +48,9 @@ function user_abort()
     return Cint(Error.EAUTH)
 end
 
-function authenticate_ssh(creds::SSHCredentials, libgit2credptr::Ptr{Ptr{Void}},
+function authenticate_ssh(libgit2credptr::Ptr{Ptr{Void}}, p::CredentialPayload,
         username_ptr, schema, host)
+    creds = Base.get(p.credential)::SSHCredentials
     isusedcreds = checkused!(creds)
 
     # Note: The same SSHCredentials can be used to authenticate separate requests using the
@@ -167,8 +168,9 @@ function authenticate_ssh(creds::SSHCredentials, libgit2credptr::Ptr{Ptr{Void}},
                  libgit2credptr, creds.user, creds.pubkey, creds.prvkey, creds.pass)
 end
 
-function authenticate_userpass(creds::UserPasswordCredentials, libgit2credptr::Ptr{Ptr{Void}},
+function authenticate_userpass(libgit2credptr::Ptr{Ptr{Void}}, p::CredentialPayload,
         schema, host, urlusername)
+    creds = Base.get(p.credential)::UserPasswordCredentials
     isusedcreds = checkused!(creds)
 
     if creds.prompt_if_incorrect
@@ -211,7 +213,7 @@ end
 """Credentials callback function
 
 Function provides different credential acquisition functionality w.r.t. a connection protocol.
-If a payload is provided then `payload_ptr` should contain a `LibGit2.AbstractCredentials` object.
+If a payload is provided then `payload_ptr` should contain a `LibGit2.CredentialPayload` object.
 
 For `LibGit2.Consts.CREDTYPE_USERPASS_PLAINTEXT` type, if the payload contains fields:
 `user` & `pass`, they are used to create authentication credentials.
@@ -240,47 +242,45 @@ function credentials_callback(libgit2credptr::Ptr{Ptr{Void}}, url_ptr::Cstring,
     err = Cint(0)
     url = unsafe_string(url_ptr)
 
+    # get `CredentialPayload` object from payload pointer
+    @assert payload_ptr != C_NULL
+    p = unsafe_pointer_to_objref(payload_ptr)[]::CredentialPayload
+
     # parse url for schema and host
     urlparts = match(URL_REGEX, url)
     schema = urlparts[:scheme] === nothing ? "" : urlparts[:scheme]
     urlusername = urlparts[:user] === nothing ? "" : urlparts[:user]
     host = urlparts[:host]
 
-    # get credentials object from payload pointer
-    @assert payload_ptr != C_NULL
-    creds = unsafe_pointer_to_objref(payload_ptr)
-    explicit = !isnull(creds[]) && !isa(Base.get(creds[]), CachedCredentials)
     # use ssh key or ssh-agent
     if isset(allowed_types, Cuint(Consts.CREDTYPE_SSH_KEY))
-        sshcreds = get_creds!(creds, "ssh://$host", reset!(SSHCredentials(true), -1))
-        if isa(sshcreds, SSHCredentials)
-            err = authenticate_ssh(sshcreds, libgit2credptr, username_ptr, schema, host)
-            err == 0 && return err
+        if isnull(p.credential) || !isa(unsafe_get(p.credential), SSHCredentials)
+            creds = reset!(SSHCredentials(true), -1)
+            if !isnull(p.cache)
+                credid = "ssh://$host"
+                creds = get_creds!(unsafe_get(p.cache), credid, creds)
+            end
+            p.credential = Nullable(creds)
         end
+        err = authenticate_ssh(libgit2credptr, p, username_ptr, schema, host)
+        err == 0 && return err
     end
 
     if isset(allowed_types, Cuint(Consts.CREDTYPE_USERPASS_PLAINTEXT))
-        defaultcreds = reset!(UserPasswordCredentials(true), -1)
-        credid = "$(isempty(schema) ? "ssh" : schema)://$host"
-        upcreds = get_creds!(creds, credid, defaultcreds)
-        # If there were stored SSH credentials, but we ended up here that must
-        # mean that something went wrong. Replace the SSH credentials by user/pass
-        # credentials
-        if !isa(upcreds, UserPasswordCredentials)
-            upcreds = defaultcreds
-            isa(Base.get(creds[]), CachedCredentials) && (Base.get(creds[]).creds[credid] = upcreds)
+        if isnull(p.credential) || !isa(unsafe_get(p.credential), UserPasswordCredentials)
+            creds = reset!(UserPasswordCredentials(true), -1)
+            if !isnull(p.cache)
+                credid = "$(isempty(schema) ? "ssh" : schema)://$host"
+                creds = get_creds!(unsafe_get(p.cache), credid, creds)
+            end
+            p.credential = Nullable(creds)
         end
-        return authenticate_userpass(upcreds, libgit2credptr, schema, host, urlusername)
+        err = authenticate_userpass(libgit2credptr, p, schema, host, urlusername)
+        err == 0 && return err
     end
 
-    # No authentication method we support succeeded. The most likely cause is
-    # that explicit credentials were passed in, but said credentials are incompatible
-    # with the remote host.
+    # No authentication method we support succeeded.
     if err == 0
-        if explicit
-            warn("The explicitly provided credentials were incompatible with " *
-                 "the server's supported authentication methods")
-        end
         err = Cint(Error.EAUTH)
     end
     return err

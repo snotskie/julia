@@ -1,6 +1,7 @@
 # This file is a part of Julia. License is MIT: https://julialang.org/license
 
-import Base.LibGit2: AbstractCredentials, UserPasswordCredentials, SSHCredentials, CachedCredentials
+import Base.LibGit2: AbstractCredentials, UserPasswordCredentials, SSHCredentials,
+    CachedCredentials, CredentialPayload, Payload
 
 """
 Emulates the LibGit2 credential loop to allows testing of the credential_callback function
@@ -11,10 +12,10 @@ function credential_loop(
         url::AbstractString,
         user::Nullable{<:AbstractString},
         allowed_types::UInt32,
-        cache::CachedCredentials=CachedCredentials())
+        payload::CredentialPayload=CredentialPayload())
     cb = Base.LibGit2.credentials_cb()
     libgitcred_ptr_ptr = Ref{Ptr{Void}}(C_NULL)
-    payload_ptr = Ref(Nullable{AbstractCredentials}(cache))
+    payload_ptr = Ref{Payload}(payload)
 
     # Number of times credentials were authenticated against. With the real LibGit2
     # credential loop this would be how many times we sent credentials to the remote.
@@ -29,7 +30,7 @@ function credential_loop(
         num_authentications += 1
 
         # Check if the callback provided us with valid credentials
-        if length(cache.cred) == 1 && first(values(cache.cred)) == valid_credential
+        if !isnull(payload.credential) && get(payload.credential) == valid_credential
             break
         end
 
@@ -62,7 +63,7 @@ function credential_loop(
         LibGit2.get_creds!(cache, "ssh://$(m[:host])", default_cred)
     end
 
-    credential_loop(valid_credential, url, user, 0x000046, cache)
+    credential_loop(valid_credential, url, user, 0x000046, CredentialPayload(Nullable(cache)))
 end
 
 function credential_loop(
