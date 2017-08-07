@@ -296,7 +296,7 @@
 
 ;; construct the (method ...) expression for one primitive method definition,
 ;; assuming optional and keyword args are already handled
-(define (method-def-expr- name sparams argl body isstaged (rett '(core Any)))
+(define (method-def-expr- name sparams argl body (rett '(core Any)))
   (if
    (any kwarg? argl)
    ;; has optional positional args
@@ -315,7 +315,7 @@
             (dfl  (map caddr kws)))
         (receive
          (vararg req) (separate vararg? argl)
-         (optional-positional-defs name sparams req opt dfl body isstaged
+         (optional-positional-defs name sparams req opt dfl body
                                    (append req opt vararg) rett)))))
    ;; no optional positional args
    (let ((names (map car sparams)))
@@ -337,7 +337,7 @@
             (mdef
              (if (null? sparams)
                  `(method ,name (call (core svec) (call (core svec) ,@(dots->vararg types)) (call (core svec)))
-                          ,body ,isstaged)
+                          ,body)
                  `(method ,name
                           (block
                            ,@(let loop ((n       names)
@@ -358,7 +358,7 @@
                                                              (replace-vars ty renames))
                                                            types)))
                                  (call (core svec) ,@temps)))
-                          ,body ,isstaged))))
+                          ,body))))
        (if (symbol? name)
            `(block (method ,name) ,mdef (unnecessary ,name))  ;; return the function
            mdef)))))
@@ -373,10 +373,8 @@
 
 (define empty-vector-any '(call (core AnyVector) 0))
 
-(define (keywords-method-def-expr name sparams argl body isstaged rett)
+(define (keywords-method-def-expr name sparams argl body rett)
   (let* ((kargl (cdar argl))  ;; keyword expressions (= k v)
-         (annotations (map (lambda (a) `(meta nospecialize ,(arg-name (cadr (caddr a)))))
-                           (filter nospecialize-meta? kargl)))
          (kargl (map (lambda (a)
                        (if (nospecialize-meta? a) (caddr a) a))
                      kargl))
@@ -413,6 +411,11 @@
                                 keynames))
          ;; list of function's initial line number and meta nodes (empty if none)
          (prologue (extract-method-prologue body))
+         (annotations (append (if (any generated-meta? prologue)
+                                  '((meta generated))
+                                  '())
+                              (map (lambda (a) `(meta nospecialize ,(arg-name (cadr (caddr a)))))
+                                   (filter nospecialize-meta? kargl))))
          ;; body statements
          (stmts (cdr body))
          (positional-sparams
@@ -437,7 +440,7 @@
         ,(method-def-expr-
           name positional-sparams (append pargl vararg)
           `(block
-            ,@prologue
+            ,@(without-generated prologue)
             ,(let (;; call mangled(vals..., [rest_kw,] pargs..., [vararg]...)
                    (ret `(return (call ,mangled
                                        ,@(if ordered-defaults keynames vals)
@@ -447,8 +450,7 @@
                                              (list `(... ,(arg-name (car vararg)))))))))
                (if ordered-defaults
                    (scopenest keynames vals ret)
-                   ret)))
-          #f)
+                   ret))))
 
         ;; call with keyword args pre-sorted - original method code goes here
         ,(method-def-expr-
@@ -467,7 +469,7 @@
           (insert-after-meta `(block
                                ,@stmts)
                              annotations)
-          isstaged rett)
+          rett)
 
         ;; call with unsorted keyword args. this sorts and re-dispatches.
         ,(method-def-expr-
@@ -549,8 +551,7 @@
                                        ,@(if (null? restkw) '() (list rkw))
                                        ,@(map arg-name pargl)
                                        ,@(if (null? vararg) '()
-                                             (list `(... ,(arg-name (car vararg)))))))))
-          #f)
+                                             (list `(... ,(arg-name (car vararg))))))))))
         ;; return primary function
         ,(if (not (symbol? name))
              '(null) name)))))
@@ -562,6 +563,12 @@
                     (and (pair? e) (or (eq? (car e) 'line) (eq? (car e) 'meta))))
                   (cdr body))
       '()))
+
+(define (without-generated stmts)
+  (map (lambda (x) (if (generated-meta? x)
+                       (filter (lambda (e) (not (eq? e 'generated))) x)
+                       x))
+       stmts))
 
 ;; keep only sparams used by `expr` or other sparams
 (define (filter-sparams expr sparams)
@@ -576,8 +583,8 @@
           (else
            (loop filtered (cdr params))))))
 
-(define (optional-positional-defs name sparams req opt dfl body isstaged overall-argl rett)
-  (let ((prologue (extract-method-prologue body)))
+(define (optional-positional-defs name sparams req opt dfl body overall-argl rett)
+  (let ((prologue (without-generated (extract-method-prologue body))))
     `(block
       ,@(map (lambda (n)
                (let* ((passed (append req (list-head opt n)))
@@ -606,9 +613,9 @@
                            `(block
                              ,@prologue
                              (call ,(arg-name (car req)) ,@(map arg-name (cdr passed)) ,@vals)))))
-                 (method-def-expr- name sp passed body #f)))
+                 (method-def-expr- name sp passed body)))
              (iota (length opt)))
-      ,(method-def-expr- name sparams overall-argl body isstaged rett))))
+      ,(method-def-expr- name sparams overall-argl body rett))))
 
 ;; strip empty (parameters ...), normalizing `f(x;)` to `f(x)`.
 (define (remove-empty-parameters argl)
@@ -637,14 +644,14 @@
 ;; definitions without keyword arguments are passed to method-def-expr-,
 ;; which handles optional positional arguments by adding the needed small
 ;; boilerplate definitions.
-(define (method-def-expr name sparams argl body isstaged rett)
+(define (method-def-expr name sparams argl body rett)
   (let ((argl (remove-empty-parameters argl)))
     (if (has-parameters? argl)
         ;; has keywords
         (begin (check-kw-args (cdar argl))
-               (keywords-method-def-expr name sparams argl body isstaged rett))
+               (keywords-method-def-expr name sparams argl body rett))
         ;; no keywords
-        (method-def-expr- name sparams argl body isstaged rett))))
+        (method-def-expr- name sparams argl body rett))))
 
 (define (struct-def-expr name params super fields mut)
   (receive
@@ -773,12 +780,12 @@
                          ,@sig)
                   new-params)))))
 
-(define (ctor-def keyword name Tname params bounds sig ctor-body body wheres)
+(define (ctor-def name Tname params bounds sig ctor-body body wheres)
   (let* ((curly?     (and (pair? name) (eq? (car name) 'curly)))
          (curlyargs  (if curly? (cddr name) '()))
          (name       (if curly? (cadr name) name)))
     (cond ((not (eq? name Tname))
-           `(,keyword ,(with-wheres `(call ,(if curly?
+           `(function ,(with-wheres `(call ,(if curly?
                                                 `(curly ,name ,@curlyargs)
                                                 name)
                                            ,@sig)
@@ -787,7 +794,7 @@
                       ;; new{...} inside a non-ctor inner definition.
                       ,(ctor-body body '())))
           (wheres
-           `(,keyword ,(with-wheres `(call ,(if curly?
+           `(function ,(with-wheres `(call ,(if curly?
                                                 `(curly ,name ,@curlyargs)
                                                 name)
                                            ,@sig)
@@ -801,7 +808,7 @@
                  (syntax-deprecation #f
                                      (string "inner constructor " name "(...)" (linenode-string (function-body-lineno body)))
                                      (deparse `(where (call (curly ,name ,@params) ...) ,@params))))
-             `(,keyword ,sig ,(ctor-body body params)))))))
+             `(function ,sig ,(ctor-body body params)))))))
 
 (define (function-body-lineno body)
   (let ((lnos (filter (lambda (e) (and (pair? e) (eq? (car e) 'line)))
@@ -828,18 +835,14 @@
    (pattern-set
     ;; definitions without `where`
     (pattern-lambda (function       (-$ (call name . sig) (|::| (call name . sig) _t)) body)
-                    (ctor-def (car __) name Tname params bounds sig ctor-body body #f))
-    (pattern-lambda (stagedfunction (-$ (call name . sig) (|::| (call name . sig) _t)) body)
-                    (ctor-def (car __) name Tname params bounds sig ctor-body body #f))
+                    (ctor-def name Tname params bounds sig ctor-body body #f))
     (pattern-lambda (= (-$ (call name . sig) (|::| (call name . sig) _t)) body)
-                    (ctor-def 'function name Tname params bounds sig ctor-body body #f))
+                    (ctor-def name Tname params bounds sig ctor-body body #f))
     ;; definitions with `where`
     (pattern-lambda (function       (where (-$ (call name . sig) (|::| (call name . sig) _t)) . wheres) body)
-                    (ctor-def (car __) name Tname params bounds sig ctor-body body wheres))
-    (pattern-lambda (stagedfunction (where (-$ (call name . sig) (|::| (call name . sig) _t)) . wheres) body)
-                    (ctor-def (car __) name Tname params bounds sig ctor-body body wheres))
+                    (ctor-def name Tname params bounds sig ctor-body body wheres))
     (pattern-lambda (= (where (-$ (call name . sig) (|::| (call name . sig) _t)) . wheres) body)
-                    (ctor-def 'function name Tname params bounds sig ctor-body body wheres)))
+                    (ctor-def name Tname params bounds sig ctor-body body wheres)))
 
    ;; flatten `where`s first
    (pattern-replace
@@ -980,7 +983,7 @@
                 (loop (if isseq F (cdr F)) (cdr A) stmts
                       (list* (if isamp `(& ,ca) ca) C) (list* g GC))))))))
 
-(define (expand-function-def e)   ;; handle function or stagedfunction
+(define (expand-function-def e)   ;; handle function definitions
   (define (just-arglist? ex)
     (and (pair? ex)
          (or (memq (car ex) '(tuple block))
@@ -1038,7 +1041,6 @@
                                       (where  where)
                                       (else   '())))
                   (sparams (map analyze-typevar raw-typevars))
-                  (isstaged (eq? (car e) 'stagedfunction))
                   (adj-decl (lambda (n) (if (and (decl? n) (length= n 2))
                                             `(|::| |#self#| ,(cadr n))
                                             n)))
@@ -1062,7 +1064,7 @@
                                                                         (cdr argl)))
                                                       ,@raw-typevars))))
              (expand-forms
-              (method-def-expr name sparams argl body isstaged rett))))
+              (method-def-expr name sparams argl body rett))))
           (else
            (error (string "invalid assignment location \"" (deparse name) "\""))))))
 
@@ -1239,7 +1241,6 @@
   (cond ((or (atom? e) (quoted? e)) e)
         ((or (eq? (car e) 'lambda)
              (eq? (car e) 'function)
-             (eq? (car e) 'stagedfunction)
              (eq? (car e) '->)) e)
         ((eq? (car e) 'return)
          `(block ,@(if ret `((= ,ret true)) '())
@@ -1888,7 +1889,6 @@
 (define expand-table
   (table
    'function       expand-function-def
-   'stagedfunction expand-function-def
    '->             expand-arrow
    'let            expand-let
    'macro          expand-macro-def
@@ -3165,8 +3165,7 @@ f(x) = yt(x)
                             ,@top-stmts
                             (block ,@sp-inits
                                    (method ,name ,(cl-convert sig fname lam namemap toplevel interp)
-                                           ,(julia-expand-macros `(quote ,newlam))
-                                           ,(last e)))))))
+                                           ,(julia-expand-macros `(quote ,newlam))))))))
                  ;; local case - lift to a new type at top level
                  (let* ((exists (get namemap name #f))
                         (type-name  (or exists
@@ -3239,8 +3238,7 @@ f(x) = yt(x)
                                                                    (if iskw
                                                                        (caddr (lam:args lam2))
                                                                        (car (lam:args lam2)))
-                                                                   #f closure-param-names)
-                                                  ,(last e)))))))
+                                                                   #f closure-param-names)))))))
                         (mk-closure  ;; expression to make the closure
                          (let* ((var-exprs (map (lambda (v)
                                                   (let ((cv (assq v (cadr (lam:vinfo lam)))))
@@ -3606,8 +3604,7 @@ f(x) = yt(x)
              (if (length> e 2)
                  (begin (emit `(method ,(or (cadr e) 'false)
                                        ,(compile (caddr e) break-labels #t #f)
-                                       ,(linearize (cadddr e))
-                                       ,(if (car (cddddr e)) 'true 'false)))
+                                       ,(linearize (cadddr e))))
                         (if value (compile '(null) break-labels value tail)))
                  (cond (tail  (emit-return e))
                        (value e)

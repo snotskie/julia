@@ -55,7 +55,7 @@ jl_sym_t *meta_sym; jl_sym_t *compiler_temp_sym;
 jl_sym_t *inert_sym; jl_sym_t *vararg_sym;
 jl_sym_t *unused_sym; jl_sym_t *static_parameter_sym;
 jl_sym_t *polly_sym; jl_sym_t *inline_sym;
-jl_sym_t *propagate_inbounds_sym;
+jl_sym_t *propagate_inbounds_sym; jl_sym_t *generated_sym;
 jl_sym_t *isdefined_sym; jl_sym_t *nospecialize_sym;
 
 static uint8_t flisp_system_image[] = {
@@ -437,6 +437,7 @@ void jl_init_frontend(void)
     propagate_inbounds_sym = jl_symbol("propagate_inbounds");
     isdefined_sym = jl_symbol("isdefined");
     nospecialize_sym = jl_symbol("nospecialize");
+    generated_sym = jl_symbol("generated");
 }
 
 JL_DLLEXPORT void jl_lisp_prompt(void)

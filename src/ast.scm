@@ -345,6 +345,9 @@
   (and (if one (length= e 3) (length> e 2))
        (eq? (car e) 'meta) (eq? (cadr e) 'nospecialize)))
 
+(define (generated-meta? e)
+  (and (pair? e) (eq? (car e) 'meta) (any (lambda (x) (eq? x 'generated)) (cdr e))))
+
 ;; flatten nested expressions with the given head
 ;; (op (op a b) c) => (op a b c)
 (define (flatten-ex head e)

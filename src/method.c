@@ -392,7 +392,7 @@ jl_method_instance_t *jl_get_specialized(jl_method_t *m, jl_value_t *types, jl_s
     return new_linfo;
 }
 
-static void jl_method_set_source(jl_method_t *m, jl_code_info_t *src)
+static void jl_method_set_source(jl_method_t *m, jl_code_info_t *src, int *isstaged)
 {
     uint8_t j;
     uint8_t called = 0;
@@ -441,28 +441,36 @@ static void jl_method_set_source(jl_method_t *m, jl_code_info_t *src)
                 set_lineno = 1;
             }
         }
-        else if (jl_is_expr(st) && ((jl_expr_t*)st)->head == meta_sym &&
-                 jl_expr_nargs(st) > 1 && jl_exprarg(st, 0) == (jl_value_t*)nospecialize_sym) {
-            for (size_t j=1; j < jl_expr_nargs(st); j++) {
-                jl_value_t *aj = jl_exprarg(st, j);
-                if (jl_is_slot(aj)) {
-                    int sn = (int)jl_slot_number(aj) - 2;
-                    if (sn >= 0) {  // @nospecialize on self is valid but currently ignored
-                        if (sn > (m->nargs - 2)) {
-                            jl_error("@nospecialize annotation applied to a non-argument");
-                        }
-                        else if (sn >= sizeof(m->nospecialize) * 8) {
-                            jl_printf(JL_STDERR,
-                                      "WARNING: @nospecialize annotation only supported on the first %d arguments.\n",
-                                      (int)(sizeof(m->nospecialize) * 8));
-                        }
-                        else {
-                            m->nospecialize |= (1 << sn);
+        else if (jl_is_expr(st) && ((jl_expr_t*)st)->head == meta_sym) {
+            if (jl_expr_nargs(st) > 1 && jl_exprarg(st, 0) == (jl_value_t*)nospecialize_sym) {
+                for (size_t j=1; j < jl_expr_nargs(st); j++) {
+                    jl_value_t *aj = jl_exprarg(st, j);
+                    if (jl_is_slot(aj)) {
+                        int sn = (int)jl_slot_number(aj) - 2;
+                        if (sn >= 0) {  // @nospecialize on self is valid but currently ignored
+                            if (sn > (m->nargs - 2)) {
+                                jl_error("@nospecialize annotation applied to a non-argument");
+                            }
+                            else if (sn >= sizeof(m->nospecialize) * 8) {
+                                jl_printf(JL_STDERR,
+                                          "WARNING: @nospecialize annotation only supported on the first %d arguments.\n",
+                                          (int)(sizeof(m->nospecialize) * 8));
+                            }
+                            else {
+                                m->nospecialize |= (1 << sn);
+                            }
                         }
                     }
                 }
+                st = jl_nothing;
             }
-            st = jl_nothing;
+            else {
+                for (size_t j=0; j < jl_expr_nargs(st); j++) {
+                    if (jl_exprarg(st, j) == (jl_value_t*)generated_sym) {
+                        *isstaged = 1; break;
+                    }
+                }
+            }
         }
         else {
             st = jl_resolve_globals(st, m->module, sparam_vars);
@@ -513,10 +521,10 @@ static jl_method_t *jl_new_method(
         jl_tupletype_t *sig,
         size_t nargs,
         int isva,
-        jl_svec_t *tvars,
-        int isstaged)
+        jl_svec_t *tvars)
 {
     size_t i, l = jl_svec_len(tvars);
+    int isstaged = 0;
     jl_svec_t *sparam_syms = jl_alloc_svec_uninit(l);
     for (i = 0; i < l; i++) {
         jl_svecset(sparam_syms, i, ((jl_tvar_t*)jl_svecref(tvars, i))->name);
@@ -533,7 +541,7 @@ static jl_method_t *jl_new_method(
     m->sig = (jl_value_t*)sig;
     m->isva = isva;
     m->nargs = nargs;
-    jl_method_set_source(m, definition);
+    jl_method_set_source(m, definition, &isstaged);
     if (isstaged) {
         // create and store generator for generated functions
         m->generator = jl_get_specialized(m, (jl_value_t*)jl_anytuple_type, jl_emptysvec);
@@ -659,8 +667,7 @@ JL_DLLEXPORT jl_value_t *jl_argument_datatype(jl_value_t *argt)
 extern tracer_cb jl_newmeth_tracer;
 JL_DLLEXPORT void jl_method_def(jl_svec_t *argdata,
                                 jl_code_info_t *f,
-                                jl_module_t *module,
-                                jl_value_t *isstaged)
+                                jl_module_t *module)
 {
     // argdata is svec(svec(types...), svec(typevars...))
     jl_svec_t *atypes = (jl_svec_t*)jl_svecref(argdata, 0);
@@ -720,7 +727,7 @@ JL_DLLEXPORT void jl_method_def(jl_svec_t *argdata,
         argtype = jl_new_struct(jl_unionall_type, tv, argtype);
     }
 
-    m = jl_new_method(f, name, module, (jl_tupletype_t*)argtype, nargs, isva, tvars, isstaged == jl_true);
+    m = jl_new_method(f, name, module, (jl_tupletype_t*)argtype, nargs, isva, tvars);
     m->nospecialize |= nospec;
 
     if (jl_has_free_typevars(argtype)) {

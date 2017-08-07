@@ -333,8 +333,8 @@ function remove_linenums!(ex::Expr)
 end
 
 macro generated(f)
-     if isa(f, Expr) && (f.head === :function || is_short_function_def(f))
-        f.head = :stagedfunction
+    if isa(f, Expr) && (f.head === :function || is_short_function_def(f))
+        pushmeta!(f, :generated)
         return Expr(:escape, f)
     else
         error("invalid syntax; @generated must be used with a function definition")
