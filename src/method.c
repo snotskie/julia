@@ -239,24 +239,23 @@ jl_code_info_t *jl_new_code_info_from_ast(jl_expr_t *ast)
 }
 
 // invoke (compiling if necessary) the jlcall function pointer for a method template
-STATIC_INLINE jl_value_t *jl_call_staged(jl_svec_t *sparam_vals, jl_method_instance_t *generator,
+STATIC_INLINE jl_value_t *jl_call_staged(jl_method_t *def, jl_value_t *generator, jl_svec_t *sparam_vals,
                                          jl_value_t **args, uint32_t nargs)
 {
-    jl_generic_fptr_t fptr;
-    fptr.fptr = generator->fptr;
-    fptr.jlcall_api = generator->jlcall_api;
-    if (__unlikely(fptr.fptr == NULL || fptr.jlcall_api == 0)) {
-        size_t world = generator->def.method->min_world;
-        const char *F = jl_compile_linfo(&generator, (jl_code_info_t*)generator->inferred, world, &jl_default_cgparams).functionObject;
-        fptr = jl_generate_fptr(generator, F, world);
+    size_t spl = jl_svec_len(sparam_vals);
+    jl_value_t **gargs;
+    size_t totargs = 1 + spl + nargs + def->isva;
+    JL_GC_PUSHARGS(gargs, totargs);
+    gargs[0] = generator;
+    memcpy(&gargs[1], jl_svec_data(sparam_vals), spl * sizeof(void*));
+    memcpy(&gargs[1+spl], args, nargs * sizeof(void*));
+    if (def->isva) {
+        gargs[totargs-1] = jl_f_tuple(NULL, &gargs[1+spl+def->nargs-1], nargs - (def->nargs-1));
+        gargs[1+spl+def->nargs-1] = gargs[totargs-1];
     }
-    assert(jl_svec_len(generator->def.method->sparam_syms) == jl_svec_len(sparam_vals));
-    if (fptr.jlcall_api == 1)
-        return fptr.fptr1(args[0], &args[1], nargs-1);
-    else if (fptr.jlcall_api == 3)
-        return fptr.fptr3(sparam_vals, args[0], &args[1], nargs-1);
-    else
-        abort(); // shouldn't have inferred any other calling convention
+    jl_value_t *code = jl_apply(gargs, 1+spl+def->nargs);
+    JL_GC_POP();
+    return code;
 }
 
 // return a newly allocated CodeInfo for the function signature
@@ -269,9 +268,11 @@ JL_DLLEXPORT jl_code_info_t *jl_code_for_staged(jl_method_instance_t *linfo)
     jl_expr_t *ex = NULL;
     jl_value_t *linenum = NULL;
     jl_svec_t *sparam_vals = env;
-    jl_method_instance_t *generator = linfo->def.method->generator;
+    jl_value_t *generator = linfo->def.method->generator;
+    jl_method_t *gen_meth = jl_gf_mtable(generator)->defs.leaf->func.method;
     assert(generator != NULL);
     assert(linfo != generator);
+    assert(jl_is_method(gen_meth));
     jl_code_info_t *func = NULL;
     JL_GC_PUSH4(&ex, &linenum, &sparam_vals, &func);
     jl_ptls_t ptls = jl_get_ptls_states();
@@ -286,13 +287,14 @@ JL_DLLEXPORT jl_code_info_t *jl_code_for_staged(jl_method_instance_t *linfo)
         // need to eval macros in the right module
         ptls->current_task->current_module = ptls->current_module = linfo->def.method->module;
         // and the right world
-        ptls->world_age = generator->def.method->min_world;
+        ptls->world_age = gen_meth->min_world;
 
         ex = jl_exprn(lambda_sym, 2);
 
-        jl_array_t *argnames = jl_alloc_vec_any(linfo->def.method->nargs);
+        jl_array_t *argnames = jl_alloc_vec_any(linfo->def.method->nargs + jl_svec_len(sparam_vals) + 1);
         jl_array_ptr_set(ex->args, 0, argnames);
-        jl_fill_argnames((jl_array_t*)generator->inferred, argnames);
+        jl_fill_argnames((jl_array_t*)gen_meth->source, argnames);
+        jl_array_del_beg(argnames, jl_svec_len(sparam_vals) + 1);
 
         // build the rest of the body to pass to expand
         jl_expr_t *scopeblock = jl_exprn(jl_symbol("scope-block"), 1);
@@ -313,7 +315,7 @@ JL_DLLEXPORT jl_code_info_t *jl_code_for_staged(jl_method_instance_t *linfo)
         // invoke code generator
         assert(jl_nparams(tt) == jl_array_len(argnames) ||
                (linfo->def.method->isva && (jl_nparams(tt) >= jl_array_len(argnames) - 1)));
-        jl_value_t *generated_body = jl_call_staged(sparam_vals, generator, jl_svec_data(tt->parameters), jl_nparams(tt));
+        jl_value_t *generated_body = jl_call_staged(linfo->def.method, generator, sparam_vals, jl_svec_data(tt->parameters), jl_nparams(tt));
         jl_array_ptr_set(body->args, 2, generated_body);
 
         if (jl_is_code_info(generated_body)) {
@@ -392,7 +394,7 @@ jl_method_instance_t *jl_get_specialized(jl_method_t *m, jl_value_t *types, jl_s
     return new_linfo;
 }
 
-static void jl_method_set_source(jl_method_t *m, jl_code_info_t *src, int *isstaged)
+static void jl_method_set_source(jl_method_t *m, jl_code_info_t *src, jl_value_t **generator, int *gen_only)
 {
     uint8_t j;
     uint8_t called = 0;
@@ -464,12 +466,17 @@ static void jl_method_set_source(jl_method_t *m, jl_code_info_t *src, int *issta
                 }
                 st = jl_nothing;
             }
-            else {
-                for (size_t j=0; j < jl_expr_nargs(st); j++) {
-                    if (jl_exprarg(st, j) == (jl_value_t*)generated_sym) {
-                        *isstaged = 1; break;
-                    }
+            else if (jl_expr_nargs(st) == 2 && jl_exprarg(st, 0) == (jl_value_t*)jl_symbol("generator")) {
+                jl_value_t *gname = jl_exprarg(st, 1);
+                *generator = jl_get_global(m->module, (jl_sym_t*)gname);
+                if (*generator == NULL) {
+                    jl_error("invalid @generated function; try placing it in global scope");
                 }
+                st = jl_nothing;
+            }
+            else if (jl_expr_nargs(st) == 1 && jl_exprarg(st, 0) == (jl_value_t*)jl_symbol("generated_only")) {
+                *gen_only = 1;
+                st = jl_nothing;
             }
         }
         else {
@@ -524,7 +531,6 @@ static jl_method_t *jl_new_method(
         jl_svec_t *tvars)
 {
     size_t i, l = jl_svec_len(tvars);
-    int isstaged = 0;
     jl_svec_t *sparam_syms = jl_alloc_svec_uninit(l);
     for (i = 0; i < l; i++) {
         jl_svecset(sparam_syms, i, ((jl_tvar_t*)jl_svecref(tvars, i))->name);
@@ -541,12 +547,14 @@ static jl_method_t *jl_new_method(
     m->sig = (jl_value_t*)sig;
     m->isva = isva;
     m->nargs = nargs;
-    jl_method_set_source(m, definition, &isstaged);
-    if (isstaged) {
-        // create and store generator for generated functions
-        m->generator = jl_get_specialized(m, (jl_value_t*)jl_anytuple_type, jl_emptysvec);
+    jl_value_t *gen = NULL; int gen_only = 0;
+    jl_method_set_source(m, definition, &gen, &gen_only);
+    if (gen) {
+        m->generator = gen;
         jl_gc_wb(m, m->generator);
-        m->generator->inferred = (jl_value_t*)m->source;
+    }
+    if (gen_only) {
+        assert(gen);
         m->source = NULL;
     }
 

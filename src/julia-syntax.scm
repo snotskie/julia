@@ -294,6 +294,17 @@
                (map (lambda (x) (replace-outer-vars x renames))
                     (cdr e))))))
 
+(define (make-generator-function name sp-names arg-names body)
+  (let ((arg-names (append sp-names
+                           (map (lambda (n)
+                                  (if (eq? n '|#self#|) (gensy) n))
+                                arg-names))))
+    (let ((body (insert-after-meta body  ;; don't specialize on generator arguments
+                                   `((meta nospecialize ,@arg-names)))))
+      `(block
+        (global ,name)
+        (function (call ,name ,@arg-names) ,body)))))
+
 ;; construct the (method ...) expression for one primitive method definition,
 ;; assuming optional and keyword args are already handled
 (define (method-def-expr- name sparams argl body (rett '(core Any)))
@@ -328,7 +339,14 @@
            (error "function argument and static parameter names must be distinct")))
      (if (or (and name (not (sym-ref? name))) (eq? name 'true) (eq? name 'false))
          (error (string "invalid function name \"" (deparse name) "\"")))
-     (let* ((types (llist-types argl))
+     (let* ((generator (let ((found (find generator-meta? body)))
+                         (if found
+                             (let* ((gname (symbol (string (gensy) "#" (current-julia-module-counter))))
+                                    (gf (make-generator-function gname names (llist-vars argl) (caddr (car found)))))
+                               (set-car! (cddar found) gname)
+                               (list gf))
+                             '())))
+            (types (llist-types argl))
             (body  (method-lambda-expr argl body rett))
             ;; HACK: the typevars need to be bound to ssavalues, since this code
             ;; might be moved to a different scope by closure-convert.
@@ -360,8 +378,10 @@
                                  (call (core svec) ,@temps)))
                           ,body))))
        (if (symbol? name)
-           `(block (method ,name) ,mdef (unnecessary ,name))  ;; return the function
-           mdef)))))
+           `(block ,@generator (method ,name) ,mdef (unnecessary ,name))  ;; return the function
+           (if (not (null? generator))
+               `(block ,@generator ,mdef)
+               mdef))))))
 
 ;; wrap expr in nested scopes assigning names to vals
 (define (scopenest names vals expr)
@@ -411,11 +431,8 @@
                                 keynames))
          ;; list of function's initial line number and meta nodes (empty if none)
          (prologue (extract-method-prologue body))
-         (annotations (append (if (any generated-meta? prologue)
-                                  '((meta generated))
-                                  '())
-                              (map (lambda (a) `(meta nospecialize ,(arg-name (cadr (caddr a)))))
-                                   (filter nospecialize-meta? kargl))))
+         (annotations (map (lambda (a) `(meta nospecialize ,(arg-name (cadr (caddr a)))))
+                           (filter nospecialize-meta? kargl)))
          ;; body statements
          (stmts (cdr body))
          (positional-sparams
@@ -565,10 +582,9 @@
       '()))
 
 (define (without-generated stmts)
-  (map (lambda (x) (if (generated-meta? x)
-                       (filter (lambda (e) (not (eq? e 'generated))) x)
-                       x))
-       stmts))
+  (filter (lambda (x) (not (or (generator-meta? x)
+                               (generated_only-meta? x))))
+          stmts))
 
 ;; keep only sparams used by `expr` or other sparams
 (define (filter-sparams expr sparams)

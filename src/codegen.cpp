@@ -1197,8 +1197,6 @@ jl_llvm_functions_t jl_compile_linfo(jl_method_instance_t **pli, jl_code_info_t 
                 li->inferred &&
                 // and there is something to delete (test this before calling jl_ast_flag_inlineable)
                 li->inferred != jl_nothing &&
-                // don't delete the code for the generator
-                li != li->def.method->generator &&
                 // don't delete inlineable code, unless it is constant
                 (li->jlcall_api == 2 || !jl_ast_flag_inlineable((jl_array_t*)li->inferred)) &&
                 // don't delete code when generating a precompile file
